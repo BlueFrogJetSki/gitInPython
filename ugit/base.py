@@ -1,6 +1,8 @@
 import os
+import itertools
+import operator
+from collections import namedtuple
 
-# https://www.leshenko.net/p/ugit/#write-tree-ignore-ugit
 from . import data
 
 
@@ -35,6 +37,48 @@ def is_ignored(path) -> bool:
     return ".ugit" in path.split("/") or ".git" in path.split("/")
 
 
+def commit(message) -> str:
+    commit = f"tree {write_tree()}\n"
+
+    HEAD = data.get_HEAD()
+    if HEAD:
+        commit += f"parent {HEAD}\n"
+
+    commit += "\n"
+    commit += f"message {message}\n"
+
+    oid = data.hash_objects(commit.encode(), type_="commit")
+
+    data.set_HEAD(oid)
+
+    return oid
+
+
+Commit = namedtuple("Commit", ["tree", "parent", "message"])
+
+
+def get_commit(oid):
+    parent = None
+    tree = None
+    commit = data.get_object(oid, "commit").decode()
+
+    lines = iter(commit.splitlines())
+
+    for line in itertools.takewhile(operator.truth, lines):
+        key, value = line.split(" ", 1)
+        if key == "tree":
+            tree = value
+
+        elif key == "parent":
+            parent = value
+
+        else:
+            assert False, f"unknown field {key}"
+
+    message = "\n".join(lines)
+    return Commit(tree=tree, parent=parent, message=message)
+
+
 def _iter_tree_entries(oid):
     if not oid:
         return
@@ -60,7 +104,26 @@ def get_tree(oid, base_path=""):
 
 
 def read_tree(tree_oid):
+    _empty_current_directory()
     for path, oid in get_tree(tree_oid, base_path="./").items():
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
             f.write(data.get_object(oid))
+
+
+def _empty_current_directory():
+    for root, dirnames, filenames in os.walk(".", topdown=False):
+        for filename in filenames:
+            path = os.path.realpath(f"{root}/{filename}")
+            if is_ignored(path) or not os.path.isfile(path):
+                continue
+            os.remove(path)
+
+        for dirname in dirnames:
+            path = os.path.relpath(f"{root}/{dirname}")
+            if is_ignored(path):
+                continue
+            try:
+                os.rmdir(path)
+            except (FileNotFoundError, OSError):
+                pass
